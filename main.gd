@@ -19,6 +19,8 @@ const STAR_COUNT = 70
 const EXPLOSION_PARTICLES = 14
 const AUTOFIRE_INTERVAL = 0.18
 const TOUCH_FOLLOW_SPEED = 800.0
+const PHOTO_DIR = "res://foto"
+const PHOTO_DISPLAY_SIZE = 56.0
 
 var player: Node2D
 var engine_glow: Polygon2D
@@ -37,10 +39,12 @@ var emoji_font: Font
 var touch_active: bool = false
 var touch_x: float = 0.0
 var autofire_timer: float = 0.0
+var photo_textures: Array[Texture2D] = []
 
 
 func _ready() -> void:
 	emoji_font = load("res://assets/Twemoji.Mozilla.ttf")
+	_load_photo_textures()
 
 	var bg := ColorRect.new()
 	bg.color = Color(0.05, 0.05, 0.15)
@@ -282,22 +286,69 @@ func _spawn_enemy() -> void:
 	enemies.append(enemy)
 
 
+func _load_photo_textures() -> void:
+	var dir := DirAccess.open(PHOTO_DIR)
+	if dir == null:
+		return
+	var seen := {}
+	dir.list_dir_begin()
+	var name := dir.get_next()
+	while name != "":
+		if not dir.current_is_dir():
+			var canonical := name
+			if canonical.to_lower().ends_with(".import"):
+				canonical = canonical.substr(0, canonical.length() - 7)
+			var lower := canonical.to_lower()
+			var is_image := lower.ends_with(".png") or lower.ends_with(".jpg") or lower.ends_with(".jpeg") or lower.ends_with(".webp")
+			if is_image and not seen.has(canonical):
+				seen[canonical] = true
+				var path := PHOTO_DIR + "/" + canonical
+				if ResourceLoader.exists(path):
+					var tex: Texture2D = load(path)
+					if tex != null:
+						photo_textures.append(tex)
+		name = dir.get_next()
+	dir.list_dir_end()
+
+
 func _spawn_animal(pos: Vector2) -> void:
+	var trophy: Node2D
+	if photo_textures.size() > 0:
+		trophy = _make_photo_trophy()
+	else:
+		trophy = _make_emoji_trophy()
+	trophy.position = pos
+	add_child(trophy)
+
+	var tween := create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(trophy, "position:y", trophy.position.y + ANIMAL_FALL_DISTANCE, ANIMAL_LIFETIME)
+	tween.tween_property(trophy, "modulate:a", 0.0, ANIMAL_LIFETIME).set_delay(ANIMAL_LIFETIME * 0.4)
+	tween.chain().tween_callback(trophy.queue_free)
+
+
+func _make_emoji_trophy() -> Node2D:
+	var holder := Node2D.new()
 	var animal := Label.new()
 	animal.text = ANIMAL_EMOJIS[randi() % ANIMAL_EMOJIS.size()]
 	animal.add_theme_font_override("font", emoji_font)
 	animal.add_theme_font_size_override("font_size", 40)
 	animal.size = Vector2(60, 60)
+	animal.position = Vector2(-30, -30)
 	animal.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	animal.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	animal.position = pos - Vector2(30, 30)
-	add_child(animal)
+	holder.add_child(animal)
+	return holder
 
-	var tween := create_tween()
-	tween.set_parallel(true)
-	tween.tween_property(animal, "position:y", animal.position.y + ANIMAL_FALL_DISTANCE, ANIMAL_LIFETIME)
-	tween.tween_property(animal, "modulate:a", 0.0, ANIMAL_LIFETIME).set_delay(ANIMAL_LIFETIME * 0.4)
-	tween.chain().tween_callback(animal.queue_free)
+
+func _make_photo_trophy() -> Node2D:
+	var sprite := Sprite2D.new()
+	sprite.texture = photo_textures[randi() % photo_textures.size()]
+	var tex_size := sprite.texture.get_size()
+	var max_dim: float = max(tex_size.x, tex_size.y)
+	var fit_scale: float = PHOTO_DISPLAY_SIZE / max_dim
+	sprite.scale = Vector2(fit_scale, fit_scale)
+	return sprite
 
 
 func _spawn_stars() -> void:
