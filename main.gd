@@ -21,6 +21,17 @@ const AUTOFIRE_INTERVAL = 0.18
 const TOUCH_FOLLOW_SPEED = 800.0
 const PHOTO_DIR = "res://foto"
 const PHOTO_DISPLAY_SIZE = 56.0
+const DEFAULT_ENEMY_SCORE = 10
+const PHOTO_SCORES = {
+	"Adsız.png": 100,
+	"Adsız2.png": 250,
+	"Adsız3.png": 400,
+	"Adsız4.png": 400,
+	"Adsız5.png": 1000,
+}
+const PHOTO_WEIGHTS = {
+	"Adsız5.png": 2,
+}
 const PLAYER_MIN_Y = 220.0
 const PLAYER_MAX_Y = SCREEN_HEIGHT - 30.0
 
@@ -42,7 +53,7 @@ var touch_active: bool = false
 var touch_x: float = 0.0
 var touch_y: float = 0.0
 var autofire_timer: float = 0.0
-var photo_textures: Array[Texture2D] = []
+var photos: Array = []
 
 
 func _ready() -> void:
@@ -181,10 +192,11 @@ func _process(delta: float) -> void:
 
 		if enemy_hit:
 			_spawn_explosion(enemy.position, Color(1.0, 0.5, 0.0))
-			_spawn_animal(enemy.position)
+			var earned: int = _spawn_animal(enemy.position)
+			_spawn_score_popup(enemy.position, earned)
 			enemy.queue_free()
 			enemies.remove_at(i)
-			score += 10
+			score += earned
 			score_label.text = "Skor: %d" % score
 			continue
 
@@ -323,15 +335,22 @@ func _load_photo_textures() -> void:
 				if ResourceLoader.exists(path):
 					var tex: Texture2D = load(path)
 					if tex != null:
-						photo_textures.append(tex)
+						var score_value: int = PHOTO_SCORES.get(canonical, DEFAULT_ENEMY_SCORE)
+						var weight: int = PHOTO_WEIGHTS.get(canonical, 1)
+						var entry := {"texture": tex, "score": score_value, "name": canonical}
+						for _w in range(weight):
+							photos.append(entry)
 		name = dir.get_next()
 	dir.list_dir_end()
 
 
-func _spawn_animal(pos: Vector2) -> void:
+func _spawn_animal(pos: Vector2) -> int:
 	var trophy: Node2D
-	if photo_textures.size() > 0:
-		trophy = _make_photo_trophy()
+	var earned := DEFAULT_ENEMY_SCORE
+	if photos.size() > 0:
+		var picked: Dictionary = photos[randi() % photos.size()]
+		trophy = _make_photo_trophy(picked["texture"])
+		earned = picked["score"]
 	else:
 		trophy = _make_emoji_trophy()
 	trophy.position = pos
@@ -342,6 +361,7 @@ func _spawn_animal(pos: Vector2) -> void:
 	tween.tween_property(trophy, "position:y", trophy.position.y + ANIMAL_FALL_DISTANCE, ANIMAL_LIFETIME)
 	tween.tween_property(trophy, "modulate:a", 0.0, ANIMAL_LIFETIME).set_delay(ANIMAL_LIFETIME * 0.4)
 	tween.chain().tween_callback(trophy.queue_free)
+	return earned
 
 
 func _make_emoji_trophy() -> Node2D:
@@ -358,14 +378,34 @@ func _make_emoji_trophy() -> Node2D:
 	return holder
 
 
-func _make_photo_trophy() -> Node2D:
+func _make_photo_trophy(tex: Texture2D) -> Node2D:
 	var sprite := Sprite2D.new()
-	sprite.texture = photo_textures[randi() % photo_textures.size()]
-	var tex_size := sprite.texture.get_size()
+	sprite.texture = tex
+	var tex_size := tex.get_size()
 	var max_dim: float = max(tex_size.x, tex_size.y)
 	var fit_scale: float = PHOTO_DISPLAY_SIZE / max_dim
 	sprite.scale = Vector2(fit_scale, fit_scale)
 	return sprite
+
+
+func _spawn_score_popup(pos: Vector2, value: int) -> void:
+	var popup := Label.new()
+	popup.text = "+%d" % value
+	popup.add_theme_font_size_override("font_size", 22 if value < 500 else 30)
+	var col := Color(1.0, 0.95, 0.4) if value < 500 else Color(1.0, 0.55, 0.1)
+	popup.add_theme_color_override("font_color", col)
+	popup.add_theme_constant_override("outline_size", 4)
+	popup.add_theme_color_override("font_outline_color", Color.BLACK)
+	popup.size = Vector2(100, 30)
+	popup.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	popup.position = pos - Vector2(50, 50)
+	add_child(popup)
+
+	var tween := create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(popup, "position:y", popup.position.y - 70.0, 1.0)
+	tween.tween_property(popup, "modulate:a", 0.0, 1.0).set_delay(0.3)
+	tween.chain().tween_callback(popup.queue_free)
 
 
 func _spawn_stars() -> void:
