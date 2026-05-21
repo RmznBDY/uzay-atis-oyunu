@@ -30,7 +30,7 @@ const PHOTO_SCORES = {
 	"Adsız5.png": 1000,
 }
 const PHOTO_WEIGHTS = {
-	"Adsız5.png": 2,
+	"Adsız3.png": 2,
 }
 const PLAYER_MIN_Y = 220.0
 const PLAYER_MAX_Y = SCREEN_HEIGHT - 30.0
