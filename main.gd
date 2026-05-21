@@ -1,0 +1,365 @@
+extends Node2D
+
+const SCREEN_WIDTH = 480
+const SCREEN_HEIGHT = 720
+const PLAYER_SPEED = 300.0
+const BULLET_SPEED = 600.0
+const ENEMY_SPEED = 150.0
+const SPAWN_INTERVAL = 1.2
+const ANIMAL_EMOJIS = [
+	"🐱", "🐶", "🦊", "🐰", "🐻", "🐼", "🐨", "🐯",
+	"🦁", "🐮", "🐷", "🐸", "🐵", "🐔", "🐧", "🐦",
+	"🐤", "🐹", "🐭", "🐢", "🐠", "🐳", "🦋", "🐝",
+]
+const ANIMAL_LIFETIME = 1.6
+const ANIMAL_FALL_DISTANCE = 140.0
+const PLAYER_MAX_LIVES = 3
+const INVULNERABILITY_TIME = 1.5
+const STAR_COUNT = 70
+const EXPLOSION_PARTICLES = 14
+const AUTOFIRE_INTERVAL = 0.18
+const TOUCH_FOLLOW_SPEED = 800.0
+
+var player: Node2D
+var engine_glow: Polygon2D
+var score_label: Label
+var lives_label: Label
+var bullets: Array = []
+var enemies: Array = []
+var stars: Array = []
+var score: int = 0
+var lives: int = PLAYER_MAX_LIVES
+var spawn_timer: float = 0.0
+var invulnerability_timer: float = 0.0
+var game_over: bool = false
+var game_over_label: Label = null
+var emoji_font: SystemFont
+var touch_active: bool = false
+var touch_x: float = 0.0
+var autofire_timer: float = 0.0
+
+
+func _ready() -> void:
+	emoji_font = SystemFont.new()
+	emoji_font.font_names = PackedStringArray([
+		"Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", "Segoe UI",
+	])
+
+	var bg := ColorRect.new()
+	bg.color = Color(0.05, 0.05, 0.15)
+	bg.size = Vector2(SCREEN_WIDTH, SCREEN_HEIGHT)
+	add_child(bg)
+
+	_spawn_stars()
+
+	player = Node2D.new()
+	player.position = Vector2(SCREEN_WIDTH / 2.0, SCREEN_HEIGHT - 60)
+	add_child(player)
+	_build_player_ship(player)
+
+	score_label = Label.new()
+	score_label.text = "Skor: 0"
+	score_label.position = Vector2(10, 10)
+	score_label.add_theme_font_size_override("font_size", 22)
+	add_child(score_label)
+
+	lives_label = Label.new()
+	lives_label.add_theme_font_override("font", emoji_font)
+	lives_label.add_theme_font_size_override("font_size", 22)
+	lives_label.position = Vector2(SCREEN_WIDTH - 130, 8)
+	lives_label.size = Vector2(120, 30)
+	lives_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	add_child(lives_label)
+	_update_lives_display()
+
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventScreenTouch:
+		touch_active = event.pressed
+		if event.pressed:
+			touch_x = event.position.x
+			if game_over:
+				get_tree().reload_current_scene()
+	elif event is InputEventScreenDrag:
+		touch_x = event.position.x
+
+
+func _process(delta: float) -> void:
+	if game_over:
+		if Input.is_action_just_pressed("ui_accept"):
+			get_tree().reload_current_scene()
+		return
+
+	var input_x := 0.0
+	if Input.is_action_pressed("ui_left"):
+		input_x -= 1.0
+	if Input.is_action_pressed("ui_right"):
+		input_x += 1.0
+
+	if touch_active:
+		var target_x: float = clamp(touch_x, 28.0, SCREEN_WIDTH - 28.0)
+		player.position.x = move_toward(player.position.x, target_x, TOUCH_FOLLOW_SPEED * delta)
+	else:
+		player.position.x = clamp(
+			player.position.x + input_x * PLAYER_SPEED * delta,
+			28.0,
+			SCREEN_WIDTH - 28.0,
+		)
+
+	if engine_glow:
+		var pulse := 0.65 + 0.35 * sin(Time.get_ticks_msec() * 0.012)
+		engine_glow.modulate.a = pulse
+		engine_glow.scale.y = 0.85 + 0.25 * sin(Time.get_ticks_msec() * 0.012)
+
+	for entry in stars:
+		var s: ColorRect = entry["node"]
+		s.position.y += entry["speed"] * delta
+		if s.position.y > SCREEN_HEIGHT:
+			s.position.y = -2.0
+			s.position.x = randf_range(0.0, SCREEN_WIDTH)
+
+	if invulnerability_timer > 0.0:
+		invulnerability_timer -= delta
+		player.modulate.a = 0.35 if int(invulnerability_timer * 10.0) % 2 == 0 else 1.0
+		if invulnerability_timer <= 0.0:
+			player.modulate.a = 1.0
+
+	if Input.is_action_just_pressed("ui_accept"):
+		_spawn_bullet()
+		autofire_timer = AUTOFIRE_INTERVAL
+
+	if touch_active:
+		autofire_timer -= delta
+		if autofire_timer <= 0.0:
+			_spawn_bullet()
+			autofire_timer = AUTOFIRE_INTERVAL
+	else:
+		autofire_timer = 0.0
+
+	for i in range(bullets.size() - 1, -1, -1):
+		var bullet: ColorRect = bullets[i]
+		bullet.position.y -= BULLET_SPEED * delta
+		if bullet.position.y < -20.0:
+			bullet.queue_free()
+			bullets.remove_at(i)
+
+	spawn_timer += delta
+	if spawn_timer >= SPAWN_INTERVAL:
+		spawn_timer = 0.0
+		_spawn_enemy()
+
+	for i in range(enemies.size() - 1, -1, -1):
+		var enemy: Polygon2D = enemies[i]
+		enemy.position.y += ENEMY_SPEED * delta
+
+		var enemy_hit := false
+		for j in range(bullets.size() - 1, -1, -1):
+			var bullet: ColorRect = bullets[j]
+			if enemy.position.distance_to(bullet.position) < 22.0:
+				bullet.queue_free()
+				bullets.remove_at(j)
+				enemy_hit = true
+				break
+
+		if enemy_hit:
+			_spawn_explosion(enemy.position, Color(1.0, 0.5, 0.0))
+			_spawn_animal(enemy.position)
+			enemy.queue_free()
+			enemies.remove_at(i)
+			score += 10
+			score_label.text = "Skor: %d" % score
+			continue
+
+		if enemy.position.y > SCREEN_HEIGHT + 20.0:
+			enemy.queue_free()
+			enemies.remove_at(i)
+		elif enemy.position.distance_to(player.position) < 25.0:
+			if invulnerability_timer > 0.0:
+				_spawn_explosion(enemy.position, Color(1.0, 0.5, 0.0))
+				enemy.queue_free()
+				enemies.remove_at(i)
+				continue
+			_spawn_explosion(player.position, Color(1.0, 0.3, 0.2))
+			enemy.queue_free()
+			enemies.remove_at(i)
+			_take_damage()
+			if lives <= 0:
+				_trigger_game_over()
+				return
+
+
+func _spawn_bullet() -> void:
+	var bullet := ColorRect.new()
+	bullet.color = Color.YELLOW
+	bullet.size = Vector2(4, 12)
+	bullet.position = player.position + Vector2(-2, -30)
+	add_child(bullet)
+	bullets.append(bullet)
+
+
+func _build_player_ship(parent: Node2D) -> void:
+	engine_glow = Polygon2D.new()
+	engine_glow.polygon = PackedVector2Array([
+		Vector2(-7, 14),
+		Vector2(7, 14),
+		Vector2(5, 24),
+		Vector2(0, 32),
+		Vector2(-5, 24),
+	])
+	engine_glow.color = Color(1.0, 0.55, 0.0)
+	parent.add_child(engine_glow)
+
+	var left_wing := Polygon2D.new()
+	left_wing.polygon = PackedVector2Array([
+		Vector2(-26, 12),
+		Vector2(-9, -2),
+		Vector2(-8, 16),
+		Vector2(-22, 20),
+	])
+	left_wing.color = Color(0.1, 0.55, 0.85)
+	parent.add_child(left_wing)
+
+	var right_wing := Polygon2D.new()
+	right_wing.polygon = PackedVector2Array([
+		Vector2(26, 12),
+		Vector2(9, -2),
+		Vector2(8, 16),
+		Vector2(22, 20),
+	])
+	right_wing.color = Color(0.1, 0.55, 0.85)
+	parent.add_child(right_wing)
+
+	var body := Polygon2D.new()
+	body.polygon = PackedVector2Array([
+		Vector2(0, -28),
+		Vector2(-9, -8),
+		Vector2(-10, 16),
+		Vector2(10, 16),
+		Vector2(9, -8),
+	])
+	body.color = Color(0.88, 0.92, 0.96)
+	parent.add_child(body)
+
+	var body_stripe := Polygon2D.new()
+	body_stripe.polygon = PackedVector2Array([
+		Vector2(-2, -22),
+		Vector2(2, -22),
+		Vector2(3, 16),
+		Vector2(-3, 16),
+	])
+	body_stripe.color = Color(0.95, 0.25, 0.25)
+	parent.add_child(body_stripe)
+
+	var cockpit := Polygon2D.new()
+	cockpit.polygon = PackedVector2Array([
+		Vector2(0, -16),
+		Vector2(-5, -6),
+		Vector2(-5, 4),
+		Vector2(5, 4),
+		Vector2(5, -6),
+	])
+	cockpit.color = Color(0.35, 0.75, 1.0)
+	parent.add_child(cockpit)
+
+	var cockpit_highlight := Polygon2D.new()
+	cockpit_highlight.polygon = PackedVector2Array([
+		Vector2(-3, -12),
+		Vector2(-1, -12),
+		Vector2(-2, -4),
+		Vector2(-4, -4),
+	])
+	cockpit_highlight.color = Color(1.0, 1.0, 1.0, 0.7)
+	parent.add_child(cockpit_highlight)
+
+
+func _spawn_enemy() -> void:
+	var enemy := Polygon2D.new()
+	enemy.polygon = PackedVector2Array([
+		Vector2(0, 15),
+		Vector2(-15, -15),
+		Vector2(15, -15),
+	])
+	enemy.color = Color.RED
+	enemy.position = Vector2(randf_range(30.0, SCREEN_WIDTH - 30.0), -20.0)
+	add_child(enemy)
+	enemies.append(enemy)
+
+
+func _spawn_animal(pos: Vector2) -> void:
+	var animal := Label.new()
+	animal.text = ANIMAL_EMOJIS[randi() % ANIMAL_EMOJIS.size()]
+	animal.add_theme_font_override("font", emoji_font)
+	animal.add_theme_font_size_override("font_size", 40)
+	animal.size = Vector2(60, 60)
+	animal.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	animal.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	animal.position = pos - Vector2(30, 30)
+	add_child(animal)
+
+	var tween := create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(animal, "position:y", animal.position.y + ANIMAL_FALL_DISTANCE, ANIMAL_LIFETIME)
+	tween.tween_property(animal, "modulate:a", 0.0, ANIMAL_LIFETIME).set_delay(ANIMAL_LIFETIME * 0.4)
+	tween.chain().tween_callback(animal.queue_free)
+
+
+func _spawn_stars() -> void:
+	for i in range(STAR_COUNT):
+		var star := ColorRect.new()
+		var depth := randf()
+		var size_px := 1.0 + depth * 2.5
+		star.size = Vector2(size_px, size_px)
+		star.color = Color(1.0, 1.0, 1.0, 0.35 + depth * 0.65)
+		star.position = Vector2(randf_range(0.0, SCREEN_WIDTH), randf_range(0.0, SCREEN_HEIGHT))
+		add_child(star)
+		stars.append({"node": star, "speed": 25.0 + depth * 90.0})
+
+
+func _spawn_explosion(pos: Vector2, base_color: Color) -> void:
+	for i in range(EXPLOSION_PARTICLES):
+		var particle := ColorRect.new()
+		particle.size = Vector2(3, 3)
+		particle.color = Color(
+			base_color.r,
+			base_color.g + randf_range(-0.15, 0.25),
+			base_color.b + randf_range(0.0, 0.2),
+		)
+		particle.position = pos
+		add_child(particle)
+
+		var angle := randf() * TAU
+		var distance := randf_range(28.0, 70.0)
+		var target := pos + Vector2(cos(angle) * distance, sin(angle) * distance)
+		var lifetime := randf_range(0.35, 0.6)
+
+		var tween := create_tween()
+		tween.set_parallel(true)
+		tween.tween_property(particle, "position", target, lifetime).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		tween.tween_property(particle, "modulate:a", 0.0, lifetime)
+		tween.chain().tween_callback(particle.queue_free)
+
+
+func _take_damage() -> void:
+	lives -= 1
+	invulnerability_timer = INVULNERABILITY_TIME
+	_update_lives_display()
+
+
+func _update_lives_display() -> void:
+	if lives_label == null:
+		return
+	if lives <= 0:
+		lives_label.text = ""
+	else:
+		lives_label.text = "❤️".repeat(lives)
+
+
+func _trigger_game_over() -> void:
+	game_over = true
+	game_over_label = Label.new()
+	game_over_label.text = "OYUN BITTI\nSkor: %d\n[BOSLUK] ile tekrar dene" % score
+	game_over_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	game_over_label.size = Vector2(SCREEN_WIDTH, 100)
+	game_over_label.position = Vector2(0, SCREEN_HEIGHT / 2.0 - 50)
+	game_over_label.add_theme_font_size_override("font_size", 26)
+	add_child(game_over_label)
