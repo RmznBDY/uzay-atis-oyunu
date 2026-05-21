@@ -21,6 +21,8 @@ const AUTOFIRE_INTERVAL = 0.18
 const TOUCH_FOLLOW_SPEED = 800.0
 const PHOTO_DIR = "res://foto"
 const PHOTO_DISPLAY_SIZE = 56.0
+const PLAYER_MIN_Y = 220.0
+const PLAYER_MAX_Y = SCREEN_HEIGHT - 30.0
 
 var player: Node2D
 var engine_glow: Polygon2D
@@ -38,6 +40,7 @@ var game_over_label: Label = null
 var emoji_font: Font
 var touch_active: bool = false
 var touch_x: float = 0.0
+var touch_y: float = 0.0
 var autofire_timer: float = 0.0
 var photo_textures: Array[Texture2D] = []
 
@@ -79,10 +82,12 @@ func _input(event: InputEvent) -> void:
 		touch_active = event.pressed
 		if event.pressed:
 			touch_x = event.position.x
+			touch_y = event.position.y
 			if game_over:
 				get_tree().reload_current_scene()
 	elif event is InputEventScreenDrag:
 		touch_x = event.position.x
+		touch_y = event.position.y
 
 
 func _process(delta: float) -> void:
@@ -92,19 +97,31 @@ func _process(delta: float) -> void:
 		return
 
 	var input_x := 0.0
+	var input_y := 0.0
 	if Input.is_action_pressed("ui_left"):
 		input_x -= 1.0
 	if Input.is_action_pressed("ui_right"):
 		input_x += 1.0
+	if Input.is_action_pressed("ui_up"):
+		input_y -= 1.0
+	if Input.is_action_pressed("ui_down"):
+		input_y += 1.0
 
 	if touch_active:
 		var target_x: float = clamp(touch_x, 28.0, SCREEN_WIDTH - 28.0)
+		var target_y: float = clamp(touch_y, PLAYER_MIN_Y, PLAYER_MAX_Y)
 		player.position.x = move_toward(player.position.x, target_x, TOUCH_FOLLOW_SPEED * delta)
+		player.position.y = move_toward(player.position.y, target_y, TOUCH_FOLLOW_SPEED * delta)
 	else:
 		player.position.x = clamp(
 			player.position.x + input_x * PLAYER_SPEED * delta,
 			28.0,
 			SCREEN_WIDTH - 28.0,
+		)
+		player.position.y = clamp(
+			player.position.y + input_y * PLAYER_SPEED * delta,
+			PLAYER_MIN_Y,
+			PLAYER_MAX_Y,
 		)
 
 	if engine_glow:
