@@ -33,17 +33,14 @@ var spawn_timer: float = 0.0
 var invulnerability_timer: float = 0.0
 var game_over: bool = false
 var game_over_label: Label = null
-var emoji_font: SystemFont
+var emoji_font: Font
 var touch_active: bool = false
 var touch_x: float = 0.0
 var autofire_timer: float = 0.0
 
 
 func _ready() -> void:
-	emoji_font = SystemFont.new()
-	emoji_font.font_names = PackedStringArray([
-		"Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", "Segoe UI",
-	])
+	emoji_font = load("res://assets/Twemoji.Mozilla.ttf")
 
 	var bg := ColorRect.new()
 	bg.color = Color(0.05, 0.05, 0.15)
