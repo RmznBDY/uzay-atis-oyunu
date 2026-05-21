@@ -25,10 +25,11 @@ const DEFAULT_ENEMY_SCORE = 10
 const PHOTO_SCORES = {
 	"Adsız.png": 100,
 	"Adsız2.png": 250,
-	"Adsız3.png": 400,
+	"Adsız3.png": 1000,
 	"Adsız4.png": 400,
-	"Adsız5.png": 1000,
+	"Adsız5.png": 400,
 }
+const ENEMY_PHOTO_SIZE = 60.0
 const PHOTO_WEIGHTS = {
 	"Adsız3.png": 2,
 }
@@ -192,11 +193,13 @@ func _process(delta: float) -> void:
 
 		if enemy_hit:
 			_spawn_explosion(enemy.position, Color(1.0, 0.5, 0.0))
-			var earned: int = _spawn_animal(enemy.position)
-			_spawn_score_popup(enemy.position, earned)
+			var stored_score: int = enemy.get_meta("score", DEFAULT_ENEMY_SCORE)
+			var stored_tex = enemy.get_meta("photo_texture", null)
+			_spawn_trophy(enemy.position, stored_tex)
+			_spawn_score_popup(enemy.position, stored_score)
 			enemy.queue_free()
 			enemies.remove_at(i)
-			score += earned
+			score += stored_score
 			score_label.text = "Skor: %d" % score
 			continue
 
@@ -303,13 +306,32 @@ func _build_player_ship(parent: Node2D) -> void:
 
 
 func _spawn_enemy() -> void:
-	var enemy := Polygon2D.new()
-	enemy.polygon = PackedVector2Array([
-		Vector2(0, 15),
-		Vector2(-15, -15),
-		Vector2(15, -15),
-	])
-	enemy.color = Color.RED
+	var enemy := Node2D.new()
+	enemy.set_meta("score", DEFAULT_ENEMY_SCORE)
+	enemy.set_meta("photo_texture", null)
+
+	if photos.size() > 0:
+		var picked: Dictionary = photos[randi() % photos.size()]
+		var tex: Texture2D = picked["texture"]
+		var sprite := Sprite2D.new()
+		sprite.texture = tex
+		var tex_size := tex.get_size()
+		var max_dim: float = max(tex_size.x, tex_size.y)
+		var fit_scale: float = ENEMY_PHOTO_SIZE / max_dim
+		sprite.scale = Vector2(fit_scale, fit_scale)
+		enemy.add_child(sprite)
+		enemy.set_meta("score", picked["score"])
+		enemy.set_meta("photo_texture", tex)
+	else:
+		var poly := Polygon2D.new()
+		poly.polygon = PackedVector2Array([
+			Vector2(0, 15),
+			Vector2(-15, -15),
+			Vector2(15, -15),
+		])
+		poly.color = Color.RED
+		enemy.add_child(poly)
+
 	enemy.position = Vector2(randf_range(30.0, SCREEN_WIDTH - 30.0), -20.0)
 	add_child(enemy)
 	enemies.append(enemy)
@@ -344,13 +366,10 @@ func _load_photo_textures() -> void:
 	dir.list_dir_end()
 
 
-func _spawn_animal(pos: Vector2) -> int:
+func _spawn_trophy(pos: Vector2, tex) -> void:
 	var trophy: Node2D
-	var earned := DEFAULT_ENEMY_SCORE
-	if photos.size() > 0:
-		var picked: Dictionary = photos[randi() % photos.size()]
-		trophy = _make_photo_trophy(picked["texture"])
-		earned = picked["score"]
+	if tex != null:
+		trophy = _make_photo_trophy(tex)
 	else:
 		trophy = _make_emoji_trophy()
 	trophy.position = pos
@@ -361,7 +380,6 @@ func _spawn_animal(pos: Vector2) -> int:
 	tween.tween_property(trophy, "position:y", trophy.position.y + ANIMAL_FALL_DISTANCE, ANIMAL_LIFETIME)
 	tween.tween_property(trophy, "modulate:a", 0.0, ANIMAL_LIFETIME).set_delay(ANIMAL_LIFETIME * 0.4)
 	tween.chain().tween_callback(trophy.queue_free)
-	return earned
 
 
 func _make_emoji_trophy() -> Node2D:
