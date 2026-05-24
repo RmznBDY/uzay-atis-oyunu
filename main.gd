@@ -38,6 +38,7 @@ const PHOTO_WEIGHTS = {
 	"Adsız3.png": 2,
 }
 const LIFE_BONUS_PHOTO = "Adsız3.png"
+const LIFE_PENALTY_PHOTO = "Adsız.png"
 const PLAYER_MIN_Y = 220.0
 const PLAYER_MAX_Y = SCREEN_HEIGHT - 30.0
 
@@ -76,6 +77,31 @@ const ZIGZAG_FREQ = 2.5
 const ENEMY_HIT_RADIUS = 22.0
 const PLAYER_HIT_RADIUS = 25.0
 
+const BOSS_SCORE_INTERVAL = 50000
+const BOSS_HEALTH_BASE = 8
+const BOSS_HEALTH_PER_LEVEL = 3
+const BOSS_SCORE = 2000
+const BOSS_SPEED = 60.0
+const BOSS_RADIUS = 48.0
+
+const BOMB_START_COUNT = 2
+const BOMB_BUTTON_SIZE = 70.0
+const BOMB_BUTTON_MARGIN = 12.0
+
+const STAR_PICKUP_INTERVAL_MIN = 7.0
+const STAR_PICKUP_INTERVAL_MAX = 14.0
+const STAR_PICKUP_SCORE = 100
+const STAR_PICKUP_SPEED = 110.0
+const STAR_PICKUP_RADIUS = 16.0
+
+const SHIELD_DROP_CHANCE = 0.04
+const SHIELD_DURATION = 5.0
+const SHIELD_FALL_SPEED = 95.0
+const SHIELD_PICKUP_RADIUS = 22.0
+
+const HIGH_SCORE_PATH = "user://highscore.dat"
+const SAMPLE_RATE = 22050
+
 var player: Node2D
 var engine_glow: Polygon2D
 var score_label: Label
@@ -106,6 +132,26 @@ var planet_node: Node2D = null
 var planet_level: int = -1
 var planet_step: int = -1
 var bullet_count_label: Label = null
+var pickups: Array = []
+var next_boss_score: int = BOSS_SCORE_INTERVAL
+var star_pickup_timer: float = 0.0
+var shield_timer: float = 0.0
+var shield_visual: Polygon2D = null
+var bombs: int = BOMB_START_COUNT
+var bomb_button: Control = null
+var bomb_label: Label = null
+var high_score: int = 0
+var high_score_label: Label = null
+var sfx_shoot: AudioStreamPlayer = null
+var sfx_explode: AudioStreamPlayer = null
+var sfx_pickup: AudioStreamPlayer = null
+var sfx_hit: AudioStreamPlayer = null
+var sfx_bomb: AudioStreamPlayer = null
+var sfx_powerup: AudioStreamPlayer = null
+var bomb_button_rect: Rect2 = Rect2()
+var hit_flash_overlay: ColorRect = null
+var hit_flash_timer: float = 0.0
+const HIT_FLASH_DURATION = 2.0
 
 
 func _ready() -> void:
@@ -157,9 +203,27 @@ func _ready() -> void:
 	_update_bullet_count_label()
 	_update_planet()
 
+	high_score = _load_high_score()
+	high_score_label = Label.new()
+	high_score_label.position = Vector2(SCREEN_WIDTH - 130, 36)
+	high_score_label.size = Vector2(120, 20)
+	high_score_label.add_theme_font_size_override("font_size", 14)
+	high_score_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.4))
+	high_score_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	add_child(high_score_label)
+	_update_high_score_label()
+
+	_setup_sounds()
+	_setup_bomb_button()
+	_setup_hit_flash_overlay()
+	star_pickup_timer = randf_range(STAR_PICKUP_INTERVAL_MIN, STAR_PICKUP_INTERVAL_MAX)
+
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch:
+		if event.pressed and bomb_button_rect.has_point(event.position):
+			_activate_bomb()
+			return
 		touch_active = event.pressed
 		if event.pressed:
 			touch_x = event.position.x
@@ -169,6 +233,9 @@ func _input(event: InputEvent) -> void:
 	elif event is InputEventScreenDrag:
 		touch_x = event.position.x
 		touch_y = event.position.y
+	elif event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_B:
+			_activate_bomb()
 
 
 func _process(delta: float) -> void:
@@ -231,6 +298,30 @@ func _process(delta: float) -> void:
 		if invulnerability_timer <= 0.0:
 			player.modulate.a = 1.0
 
+	if shield_timer > 0.0:
+		shield_timer -= delta
+		if shield_visual:
+			shield_visual.modulate.a = 0.45 + 0.35 * sin(Time.get_ticks_msec() * 0.012)
+		if shield_timer <= 0.0:
+			_remove_shield()
+
+	if hit_flash_timer > 0.0:
+		hit_flash_timer -= delta
+		if hit_flash_overlay:
+			var blink := 0.0
+			if int(hit_flash_timer * 8.0) % 2 == 0:
+				blink = 0.55
+			hit_flash_overlay.color.a = blink
+		if hit_flash_timer <= 0.0 and hit_flash_overlay:
+			hit_flash_overlay.color.a = 0.0
+
+	star_pickup_timer -= delta
+	if star_pickup_timer <= 0.0:
+		_spawn_star_pickup()
+		star_pickup_timer = randf_range(STAR_PICKUP_INTERVAL_MIN, STAR_PICKUP_INTERVAL_MAX)
+
+	_update_pickups(delta)
+
 	if Input.is_action_just_pressed("ui_accept"):
 		_spawn_bullet()
 		autofire_timer = AUTOFIRE_INTERVAL
@@ -281,32 +372,61 @@ func _process(delta: float) -> void:
 				break
 
 		if enemy_hit:
+			var is_boss: bool = enemy.get_meta("is_boss", false)
+			if is_boss:
+				var hp: int = enemy.get_meta("health", 1) - 1
+				enemy.set_meta("health", hp)
+				_play_sound(sfx_hit)
+				_spawn_explosion(enemy.position, Color(1.0, 0.7, 0.2))
+				_update_boss_health_bar(enemy)
+				if hp > 0:
+					enemy.modulate = Color(1.5, 0.8, 0.8)
+					var flash_tween := create_tween()
+					flash_tween.tween_property(enemy, "modulate", Color(1.0, 0.6, 0.6), 0.15)
+					continue
 			_spawn_explosion(enemy.position, Color(1.0, 0.5, 0.0))
+			_play_sound(sfx_explode)
 			var stored_score: int = enemy.get_meta("score", DEFAULT_ENEMY_SCORE)
 			var is_life_bonus: bool = enemy.get_meta("is_life_bonus", false)
+			var is_life_penalty: bool = enemy.get_meta("is_life_penalty", false)
 			_spawn_score_popup(enemy.position, stored_score)
-			if is_life_bonus:
+			if is_life_bonus or is_boss:
 				lives += 1
 				_update_lives_display()
 				_spawn_life_popup(enemy.position)
+				_play_sound(sfx_powerup)
+			if is_life_penalty:
+				_spawn_life_penalty_popup(enemy.position)
+				_play_sound(sfx_hit)
+				_take_damage()
+				if lives <= 0:
+					enemy.queue_free()
+					enemies.remove_at(i)
+					_trigger_game_over()
+					return
+			if not is_boss and randf() < SHIELD_DROP_CHANCE:
+				_spawn_shield_pickup(enemy.position)
 			enemy.queue_free()
 			enemies.remove_at(i)
 			score += stored_score
 			score_label.text = "Skor: %d" % score
 			_update_bullet_count_label()
 			_update_planet()
+			_check_boss_spawn()
 			continue
 
 		if enemy.position.y > SCREEN_HEIGHT + 20.0:
 			enemy.queue_free()
 			enemies.remove_at(i)
 		elif enemy.position.distance_to(player.position) < (PLAYER_HIT_RADIUS * effective_scale * 0.5 + PLAYER_HIT_RADIUS * 0.5):
-			if invulnerability_timer > 0.0:
+			if invulnerability_timer > 0.0 or shield_timer > 0.0:
 				_spawn_explosion(enemy.position, Color(1.0, 0.5, 0.0))
+				_play_sound(sfx_explode)
 				enemy.queue_free()
 				enemies.remove_at(i)
 				continue
 			_spawn_explosion(player.position, Color(1.0, 0.3, 0.2))
+			_play_sound(sfx_hit)
 			enemy.queue_free()
 			enemies.remove_at(i)
 			_take_damage()
@@ -325,6 +445,7 @@ func _spawn_bullet() -> void:
 		bullet.position = player.position + Vector2(-2 + start_offset + i * BULLET_SPACING, -30)
 		add_child(bullet)
 		bullets.append(bullet)
+	_play_sound(sfx_shoot)
 
 
 func _current_bullet_count() -> int:
@@ -439,6 +560,8 @@ func _spawn_enemy() -> void:
 		enemy.set_meta("photo_texture", tex)
 		if (picked["name"] as String) == LIFE_BONUS_PHOTO:
 			enemy.set_meta("is_life_bonus", true)
+		elif (picked["name"] as String) == LIFE_PENALTY_PHOTO:
+			enemy.set_meta("is_life_penalty", true)
 	else:
 		var alien_kind: int = randi() % 3
 		var alien_visual: Node2D = _make_alien_visual(alien_kind)
@@ -768,6 +891,7 @@ func _spawn_explosion(pos: Vector2, base_color: Color) -> void:
 func _take_damage() -> void:
 	lives -= 1
 	invulnerability_timer = INVULNERABILITY_TIME
+	hit_flash_timer = HIT_FLASH_DURATION
 	_update_lives_display()
 
 
@@ -782,11 +906,21 @@ func _update_lives_display() -> void:
 
 func _trigger_game_over() -> void:
 	game_over = true
+	var is_new_record: bool = score > high_score
+	if is_new_record:
+		high_score = score
+		_save_high_score(high_score)
 	game_over_label = Label.new()
-	game_over_label.text = "OYUN BITTI\nSkor: %d\n[BOSLUK] ile tekrar dene" % score
+	var record_line := ""
+	if is_new_record:
+		record_line = "\nYENI REKOR! 🏆"
+	else:
+		record_line = "\nRekor: %d" % high_score
+	game_over_label.text = "OYUN BITTI\nSkor: %d%s\n[BOSLUK] ile tekrar dene" % [score, record_line]
+	game_over_label.add_theme_font_override("font", emoji_font)
 	game_over_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	game_over_label.size = Vector2(SCREEN_WIDTH, 100)
-	game_over_label.position = Vector2(0, SCREEN_HEIGHT / 2.0 - 50)
+	game_over_label.size = Vector2(SCREEN_WIDTH, 140)
+	game_over_label.position = Vector2(0, SCREEN_HEIGHT / 2.0 - 70)
 	game_over_label.add_theme_font_size_override("font_size", 26)
 	add_child(game_over_label)
 
@@ -888,3 +1022,399 @@ func _make_ellipse_points(rx: float, ry: float, segments: int) -> PackedVector2A
 		var a: float = i * TAU / segments
 		verts.append(Vector2(cos(a) * rx, sin(a) * ry))
 	return verts
+
+
+func _setup_hit_flash_overlay() -> void:
+	hit_flash_overlay = ColorRect.new()
+	hit_flash_overlay.color = Color(1.0, 1.0, 1.0, 0.0)
+	hit_flash_overlay.size = Vector2(SCREEN_WIDTH, SCREEN_HEIGHT)
+	hit_flash_overlay.position = Vector2.ZERO
+	hit_flash_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	hit_flash_overlay.z_index = 50
+	add_child(hit_flash_overlay)
+
+
+func _setup_sounds() -> void:
+	sfx_shoot = _make_sound_player(_make_beep_stream(820.0, 0.06, 0.18, true))
+	sfx_explode = _make_sound_player(_make_noise_stream(0.28, 0.35))
+	sfx_pickup = _make_sound_player(_make_beep_stream(660.0, 0.18, 0.25, false, 1320.0))
+	sfx_hit = _make_sound_player(_make_beep_stream(180.0, 0.18, 0.32, false, 80.0))
+	sfx_bomb = _make_sound_player(_make_noise_stream(0.7, 0.5))
+	sfx_powerup = _make_sound_player(_make_beep_stream(440.0, 0.32, 0.28, false, 1760.0))
+
+
+func _make_sound_player(stream: AudioStream) -> AudioStreamPlayer:
+	var p := AudioStreamPlayer.new()
+	p.stream = stream
+	add_child(p)
+	return p
+
+
+func _play_sound(player: AudioStreamPlayer) -> void:
+	if player == null:
+		return
+	player.stop()
+	player.play()
+
+
+func _make_beep_stream(start_freq: float, duration: float, volume: float, descending: bool = false, end_freq: float = 0.0) -> AudioStreamWAV:
+	var samples: int = int(SAMPLE_RATE * duration)
+	var data := PackedByteArray()
+	data.resize(samples * 2)
+	var freq_end: float = end_freq if end_freq > 0.0 else start_freq
+	for i in range(samples):
+		var t: float = i / float(SAMPLE_RATE)
+		var progress: float = i / float(samples)
+		var envelope: float = 1.0 - progress
+		envelope = envelope * envelope
+		var freq: float = lerp(start_freq, freq_end, progress)
+		if descending:
+			freq = lerp(start_freq, start_freq * 0.5, progress)
+		var sample: float = sin(t * freq * TAU) * envelope * volume
+		var int_sample: int = clampi(int(sample * 32767.0), -32768, 32767)
+		data[i * 2] = int_sample & 0xFF
+		data[i * 2 + 1] = (int_sample >> 8) & 0xFF
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = SAMPLE_RATE
+	stream.stereo = false
+	stream.data = data
+	return stream
+
+
+func _make_noise_stream(duration: float, volume: float) -> AudioStreamWAV:
+	var samples: int = int(SAMPLE_RATE * duration)
+	var data := PackedByteArray()
+	data.resize(samples * 2)
+	for i in range(samples):
+		var progress: float = i / float(samples)
+		var envelope: float = (1.0 - progress)
+		envelope = envelope * envelope * envelope
+		var sample: float = (randf() * 2.0 - 1.0) * envelope * volume
+		var int_sample: int = clampi(int(sample * 32767.0), -32768, 32767)
+		data[i * 2] = int_sample & 0xFF
+		data[i * 2 + 1] = (int_sample >> 8) & 0xFF
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = SAMPLE_RATE
+	stream.stereo = false
+	stream.data = data
+	return stream
+
+
+func _load_high_score() -> int:
+	if not FileAccess.file_exists(HIGH_SCORE_PATH):
+		return 0
+	var f := FileAccess.open(HIGH_SCORE_PATH, FileAccess.READ)
+	if f == null:
+		return 0
+	var v := f.get_32()
+	f.close()
+	return v
+
+
+func _save_high_score(value: int) -> void:
+	var f := FileAccess.open(HIGH_SCORE_PATH, FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_32(value)
+	f.close()
+
+
+func _update_high_score_label() -> void:
+	if high_score_label == null:
+		return
+	high_score_label.text = "Rekor: %d" % high_score
+
+
+func _setup_bomb_button() -> void:
+	var pos := Vector2(SCREEN_WIDTH - BOMB_BUTTON_SIZE - BOMB_BUTTON_MARGIN,
+		SCREEN_HEIGHT - BOMB_BUTTON_SIZE - BOMB_BUTTON_MARGIN)
+	bomb_button_rect = Rect2(pos, Vector2(BOMB_BUTTON_SIZE, BOMB_BUTTON_SIZE))
+
+	bomb_button = Control.new()
+	bomb_button.position = pos
+	bomb_button.size = Vector2(BOMB_BUTTON_SIZE, BOMB_BUTTON_SIZE)
+	bomb_button.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bomb_button.z_index = 40
+	add_child(bomb_button)
+
+	var bg := ColorRect.new()
+	bg.color = Color(0.2, 0.05, 0.2, 0.55)
+	bg.size = Vector2(BOMB_BUTTON_SIZE, BOMB_BUTTON_SIZE)
+	bomb_button.add_child(bg)
+
+	bomb_label = Label.new()
+	bomb_label.add_theme_font_override("font", emoji_font)
+	bomb_label.add_theme_font_size_override("font_size", 32)
+	bomb_label.add_theme_color_override("font_color", Color.WHITE)
+	bomb_label.size = Vector2(BOMB_BUTTON_SIZE, BOMB_BUTTON_SIZE)
+	bomb_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	bomb_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	bomb_button.add_child(bomb_label)
+	_update_bomb_label()
+
+
+func _update_bomb_label() -> void:
+	if bomb_label == null:
+		return
+	bomb_label.text = "💣 x%d" % bombs
+	if bombs <= 0:
+		bomb_label.modulate.a = 0.4
+	else:
+		bomb_label.modulate.a = 1.0
+
+
+func _activate_bomb() -> void:
+	if game_over or bombs <= 0:
+		return
+	bombs -= 1
+	_update_bomb_label()
+	_play_sound(sfx_bomb)
+	hit_flash_overlay.color = Color(1.0, 0.85, 0.3, 0.5)
+	var tween := create_tween()
+	tween.tween_property(hit_flash_overlay, "color:a", 0.0, 0.5)
+
+	var killed: int = 0
+	for i in range(enemies.size() - 1, -1, -1):
+		var enemy: Node2D = enemies[i]
+		_spawn_explosion(enemy.position, Color(1.0, 0.7, 0.2))
+		var s: int = enemy.get_meta("score", DEFAULT_ENEMY_SCORE)
+		score += s
+		killed += 1
+		enemy.queue_free()
+		enemies.remove_at(i)
+	if killed > 0:
+		score_label.text = "Skor: %d" % score
+		_update_bullet_count_label()
+		_update_planet()
+		_check_boss_spawn()
+
+
+func _spawn_star_pickup() -> void:
+	var pickup := Node2D.new()
+	pickup.position = Vector2(randf_range(30.0, SCREEN_WIDTH - 30.0), -20.0)
+	pickup.set_meta("kind", "star")
+	pickup.set_meta("speed", STAR_PICKUP_SPEED)
+	pickup.set_meta("radius", STAR_PICKUP_RADIUS)
+
+	var star := Polygon2D.new()
+	star.polygon = _make_star_polygon(14.0, 6.0, 5)
+	star.color = Color(1.0, 0.9, 0.3)
+	pickup.add_child(star)
+
+	var inner := Polygon2D.new()
+	inner.polygon = _make_star_polygon(8.0, 3.0, 5)
+	inner.color = Color(1.0, 1.0, 0.7)
+	pickup.add_child(inner)
+
+	add_child(pickup)
+	pickups.append(pickup)
+
+
+func _spawn_shield_pickup(pos: Vector2) -> void:
+	var pickup := Node2D.new()
+	pickup.position = pos
+	pickup.set_meta("kind", "shield")
+	pickup.set_meta("speed", SHIELD_FALL_SPEED)
+	pickup.set_meta("radius", SHIELD_PICKUP_RADIUS)
+
+	var ring := Polygon2D.new()
+	ring.polygon = _make_circle_polygon(18.0, 24)
+	ring.color = Color(0.3, 0.8, 1.0, 0.85)
+	pickup.add_child(ring)
+
+	var inner := Polygon2D.new()
+	inner.polygon = _make_circle_polygon(12.0, 20)
+	inner.color = Color(0.15, 0.45, 0.8, 0.9)
+	pickup.add_child(inner)
+
+	var letter := Label.new()
+	letter.text = "S"
+	letter.add_theme_font_size_override("font_size", 18)
+	letter.add_theme_color_override("font_color", Color.WHITE)
+	letter.size = Vector2(20, 22)
+	letter.position = Vector2(-10, -11)
+	letter.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	letter.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	pickup.add_child(letter)
+
+	add_child(pickup)
+	pickups.append(pickup)
+
+
+func _update_pickups(delta: float) -> void:
+	for i in range(pickups.size() - 1, -1, -1):
+		var pickup: Node2D = pickups[i]
+		var speed: float = pickup.get_meta("speed", 80.0)
+		pickup.position.y += speed * delta
+		pickup.rotation += delta * 2.0
+
+		var radius: float = pickup.get_meta("radius", 16.0)
+		if pickup.position.distance_to(player.position) < radius + PLAYER_HIT_RADIUS * 0.6:
+			var kind: String = pickup.get_meta("kind", "")
+			if kind == "star":
+				score += STAR_PICKUP_SCORE
+				score_label.text = "Skor: %d" % score
+				_spawn_score_popup(pickup.position, STAR_PICKUP_SCORE)
+				_play_sound(sfx_pickup)
+				_update_bullet_count_label()
+				_update_planet()
+				_check_boss_spawn()
+			elif kind == "shield":
+				_apply_shield()
+				_play_sound(sfx_powerup)
+			pickup.queue_free()
+			pickups.remove_at(i)
+			continue
+		if pickup.position.y > SCREEN_HEIGHT + 30.0:
+			pickup.queue_free()
+			pickups.remove_at(i)
+
+
+func _apply_shield() -> void:
+	shield_timer = SHIELD_DURATION
+	if shield_visual == null:
+		shield_visual = Polygon2D.new()
+		shield_visual.polygon = _make_circle_polygon(38.0, 28)
+		shield_visual.color = Color(0.4, 0.85, 1.0, 0.5)
+		player.add_child(shield_visual)
+	shield_visual.visible = true
+
+
+func _remove_shield() -> void:
+	shield_timer = 0.0
+	if shield_visual:
+		shield_visual.visible = false
+
+
+func _make_star_polygon(outer: float, inner: float, points: int) -> PackedVector2Array:
+	var verts := PackedVector2Array()
+	var step: float = TAU / (points * 2)
+	for i in range(points * 2):
+		var r: float = outer if i % 2 == 0 else inner
+		var a: float = -PI / 2.0 + i * step
+		verts.append(Vector2(cos(a) * r, sin(a) * r))
+	return verts
+
+
+func _check_boss_spawn() -> void:
+	while score >= next_boss_score:
+		_spawn_boss()
+		next_boss_score += BOSS_SCORE_INTERVAL
+
+
+func _spawn_boss() -> void:
+	var boss := Node2D.new()
+	var max_hp: int = BOSS_HEALTH_BASE + (next_boss_score / BOSS_SCORE_INTERVAL - 1) * BOSS_HEALTH_PER_LEVEL
+	boss.set_meta("is_boss", true)
+	boss.set_meta("health", max_hp)
+	boss.set_meta("max_health", max_hp)
+	boss.set_meta("score", BOSS_SCORE)
+	boss.set_meta("base_speed", BOSS_SPEED)
+	boss.set_meta("size_factor", 1.0)
+	boss.set_meta("enemy_type", "boss")
+	boss.set_meta("is_life_bonus", false)
+	boss.set_meta("is_life_penalty", false)
+
+	var body := Polygon2D.new()
+	body.polygon = PackedVector2Array([
+		Vector2(-BOSS_RADIUS, 8),
+		Vector2(-BOSS_RADIUS * 0.65, -BOSS_RADIUS * 0.6),
+		Vector2(BOSS_RADIUS * 0.65, -BOSS_RADIUS * 0.6),
+		Vector2(BOSS_RADIUS, 8),
+		Vector2(BOSS_RADIUS * 0.7, BOSS_RADIUS * 0.55),
+		Vector2(-BOSS_RADIUS * 0.7, BOSS_RADIUS * 0.55),
+	])
+	body.color = Color(0.55, 0.1, 0.25)
+	boss.add_child(body)
+
+	var cockpit := Polygon2D.new()
+	cockpit.polygon = _make_circle_polygon(BOSS_RADIUS * 0.35, 24)
+	cockpit.position = Vector2(0, -8)
+	cockpit.color = Color(1.0, 0.85, 0.3)
+	boss.add_child(cockpit)
+
+	var pupil := Polygon2D.new()
+	pupil.polygon = _make_circle_polygon(BOSS_RADIUS * 0.15, 16)
+	pupil.position = Vector2(0, -8)
+	pupil.color = Color.BLACK
+	boss.add_child(pupil)
+
+	for sx in [-1, 1]:
+		var fin := Polygon2D.new()
+		fin.polygon = PackedVector2Array([
+			Vector2(sx * BOSS_RADIUS, 8),
+			Vector2(sx * (BOSS_RADIUS + 14), BOSS_RADIUS * 0.4),
+			Vector2(sx * BOSS_RADIUS * 0.75, BOSS_RADIUS * 0.55),
+		])
+		fin.color = Color(0.35, 0.05, 0.15)
+		boss.add_child(fin)
+
+	var bar_bg := ColorRect.new()
+	bar_bg.size = Vector2(BOSS_RADIUS * 2.0, 6)
+	bar_bg.position = Vector2(-BOSS_RADIUS, -BOSS_RADIUS - 18)
+	bar_bg.color = Color(0.1, 0.1, 0.1, 0.7)
+	boss.add_child(bar_bg)
+
+	var bar_fill := ColorRect.new()
+	bar_fill.size = Vector2(BOSS_RADIUS * 2.0, 6)
+	bar_fill.position = Vector2(-BOSS_RADIUS, -BOSS_RADIUS - 18)
+	bar_fill.color = Color(0.95, 0.25, 0.3)
+	boss.add_child(bar_fill)
+	boss.set_meta("health_bar", bar_fill)
+	boss.set_meta("health_bar_width", BOSS_RADIUS * 2.0)
+
+	boss.position = Vector2(randf_range(BOSS_RADIUS + 10, SCREEN_WIDTH - BOSS_RADIUS - 10), -BOSS_RADIUS)
+	add_child(boss)
+	enemies.append(boss)
+
+	_spawn_boss_warning()
+
+
+func _update_boss_health_bar(boss: Node2D) -> void:
+	var bar = boss.get_meta("health_bar", null)
+	if bar == null:
+		return
+	var hp: int = boss.get_meta("health", 1)
+	var max_hp: int = boss.get_meta("max_health", 1)
+	var w: float = boss.get_meta("health_bar_width", 60.0)
+	var ratio: float = clamp(float(hp) / float(max_hp), 0.0, 1.0)
+	(bar as ColorRect).size.x = w * ratio
+
+
+func _spawn_boss_warning() -> void:
+	var label := Label.new()
+	label.text = "⚠ BOSS GELDI! ⚠"
+	label.add_theme_font_override("font", emoji_font)
+	label.add_theme_font_size_override("font_size", 28)
+	label.add_theme_color_override("font_color", Color(1.0, 0.4, 0.4))
+	label.add_theme_constant_override("outline_size", 5)
+	label.add_theme_color_override("font_outline_color", Color.BLACK)
+	label.size = Vector2(SCREEN_WIDTH, 50)
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.position = Vector2(0, SCREEN_HEIGHT / 2.0 - 25)
+	label.z_index = 30
+	add_child(label)
+	var tween := create_tween()
+	tween.tween_property(label, "modulate:a", 0.0, 1.8).set_delay(0.6)
+	tween.tween_callback(label.queue_free)
+
+
+func _spawn_life_penalty_popup(pos: Vector2) -> void:
+	var popup := Label.new()
+	popup.text = "-1 CAN!"
+	popup.add_theme_font_size_override("font_size", 26)
+	popup.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3))
+	popup.add_theme_constant_override("outline_size", 4)
+	popup.add_theme_color_override("font_outline_color", Color.BLACK)
+	popup.size = Vector2(140, 32)
+	popup.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	popup.position = pos - Vector2(70, 80)
+	add_child(popup)
+
+	var tween := create_tween()
+	tween.set_parallel(true)
+	tween.tween_property(popup, "position:y", popup.position.y - 90.0, 1.4)
+	tween.tween_property(popup, "modulate:a", 0.0, 1.4).set_delay(0.5)
+	tween.chain().tween_callback(popup.queue_free)
