@@ -283,9 +283,7 @@ func _process(delta: float) -> void:
 		if enemy_hit:
 			_spawn_explosion(enemy.position, Color(1.0, 0.5, 0.0))
 			var stored_score: int = enemy.get_meta("score", DEFAULT_ENEMY_SCORE)
-			var stored_tex = enemy.get_meta("photo_texture", null)
 			var is_life_bonus: bool = enemy.get_meta("is_life_bonus", false)
-			_spawn_trophy(enemy.position, stored_tex)
 			_spawn_score_popup(enemy.position, stored_score)
 			if is_life_bonus:
 				lives += 1
